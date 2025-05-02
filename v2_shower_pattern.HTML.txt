@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stationary Shower with Solid Ultra-Thin Scrolling Lines and Shower Bar (Fast)</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: start;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+        }
+        .controls {
+            margin: 10px;
+        }
+        button {
+            margin: 0 5px;
+            padding: 5px 10px;
+            font-size: 14px;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .content {
+            display: flex;
+            flex-direction: row;
+            align-items: flex-start;
+            justify-content: center;
+            margin: 10px;
+        }
+        .annotations {
+            width: 300px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 14px;
+            color: black;
+            text-align: left;
+            vertical-align: top;
+        }
+        canvas {
+            border: 1px solid black;
+            background-color: #d0d0d0;
+            margin-left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <button onclick="togglePause()">▶️ Pause/Play</button>
+        <button onclick="downloadCanvas()">📸 Download Snapshot</button>
+        <button id="replayButton" onclick="restart()">🔄 Replay</button>
+    </div>
+    <div class="content">
+        <div class="annotations">
+            <p>Felt Speed: 3,900 ft/min (~40.21 RPM)</p>
+            <p>Nozzle Spacing: 6 in</p>
+            <p>Stroke Width: 23.5 in</p>
+            <p>Nozzle Spray Width: 0.04 in</p>
+            <p>Cycle Time: 19 min</p>
+            <p>Nozzle Pressure: 180–200 psi</p>
+            <p>~764 Revolutions (1140s Real-Time)</p>
+            <p>Scaled to 60s (~1 Cycle, Solid 0.04-in Ultra-Thin Scrolling Lines with Shower Bar)</p>
+        </div>
+        <canvas id="showerCanvas" width="800" height="400"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('showerCanvas');
+        const ctx = canvas.getContext('2d');
+        const replayButton = document.getElementById('replayButton');
+
+        // Parameters
+        const feltWidth = 268; // inches
+        const nozzleSpacing = 6; // inches
+        const numNozzles = Math.ceil(feltWidth / nozzleSpacing); // 45 nozzles
+        const strokeWidth = 23.5; // inches
+        const revLength = 97; // feet
+        const feltSpeed = 3900 / 60; // feet per second (65 ft/s)
+        const strokeTime = 570; // seconds (half-cycle, 9.5 minutes)
+        const lateralShiftPerRev = 0.001026 * 2; // inches, 2x real shift
+        const realTimeDuration = 1140; // seconds (~764 revolutions)
+        const windowLength = 10 * revLength; // 970 feet
+        const duration = 60; // seconds (animation time, ~1 cycle, sped up)
+        const timeScale = duration / realTimeDuration; // ~0.05263
+        const fps = 60; // frames per second
+        const frames = duration * fps; // 3600 frames
+        const sprayWidth = 0.04; // inches
+
+        // Canvas scaling
+        const scaleX = canvas.width / feltWidth; // ~2.985 pixels/inch
+        const scaleY = canvas.height / windowLength; // ~0.412 pixels/foot
+
+        // Pixel buffer for coverage (0.04-inch resolution)
+        const bufferWidth = Math.ceil(feltWidth / sprayWidth); // ~6700 pixels
+        const coverageBuffer = new Float32Array(bufferWidth).fill(0); // Opacity per 0.04-inch
+
+        // Store all nozzle paths (unlimited for solid lines)
+        let persistentNozzlePaths = Array(numNozzles).fill().map(() => []);
+
+        // Set all nozzles to the same blue color
+        const nozzleColor = 'blue';
+
+        let frame = 0;
+        let isPaused = false;
+        let animationId = null;
+
+        // Set line rendering properties
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.imageSmoothingEnabled = false;
+
+        // Oscillation function: Nozzle only moves left-right
+        function oscillationPosition(t) {
+            const cycleTime = 2 * strokeTime;
+            const tMod = t % cycleTime;
+            return tMod < strokeTime
+                ? strokeWidth * (tMod / strokeTime)
+                : strokeWidth * (1 - (tMod - strokeTime) / strokeTime);
+        }
+
+        // Main animation function
+        function animate() {
+            if (isPaused) {
+                animationId = requestAnimationFrame(animate);
+                return;
+            }
+
+            const tReal = (frame / fps) / timeScale;
+            const revolutions = tReal / (revLength / feltSpeed); // ~764 by end
+
+            // Update nozzle positions and coverage
+            for (let j = 0; j < numNozzles; j++) {
+                const xStart = j === 0 ? 0.5 : j * nozzleSpacing; // Offset nozzle 0
+                const xPos = xStart + oscillationPosition(tReal) + revolutions * lateralShiftPerRev;
+                const xClipped = Math.max(0, Math.min(feltWidth, xPos));
+                const yPos = windowLength - (tReal * feltSpeed) % windowLength; // In feet
+                persistentNozzlePaths[j].push({ x: xClipped, y: yPos, t: tReal });
+
+                // Update coverage buffer (0.04-inch spray)
+                const bufferX = Math.floor(xClipped / sprayWidth); // Nearest 0.04-inch
+                if (bufferX >= 0 && bufferX < bufferWidth) {
+                    coverageBuffer[bufferX] = Math.min(coverageBuffer[bufferX] + 0.02, 1.0);
+                }
+            }
+
+            // Clear only shower bar and spray line area (Y = 390–400 pixels)
+            ctx.clearRect(0, 390, canvas.width, 10);
+
+            // Draw accumulated spray trails
+            ctx.globalAlpha = 0.5; // Stronger for solid lines
+            ctx.strokeStyle = nozzleColor;
+            ctx.lineWidth = 0.1; // ~0.04 inch (0.1194 pixels)
+            for (let j = 0; j < numNozzles; j++) {
+                const path = persistentNozzlePaths[j];
+                if (path.length < 2) continue;
+                ctx.beginPath();
+                for (let i = 0; i < path.length; i++) {
+                    const xPixel = path[i].x * scaleX;
+                    const yPixel = path[i].y * scaleY;
+                    if (i === 0) {
+                        ctx.moveTo(xPixel, yPixel);
+                    } else {
+                        ctx.lineTo(xPixel, yPixel);
+                    }
+                }
+                ctx.stroke();
+            }
+
+            // Draw shower bar (Y = 390–400 pixels)
+            ctx.globalAlpha = 1.0;
+            ctx.fillStyle = 'gray';
+            ctx.fillRect(0, 390, canvas.width, 10); // Bar: 800x10 pixels
+
+            // Draw nozzles and spray lines
+            ctx.fillStyle = nozzleColor;
+            ctx.strokeStyle = nozzleColor;
+            ctx.lineWidth = 0.1; // 0.04-inch spray
+            for (let j = 0; j < numNozzles; j++) {
+                const path = persistentNozzlePaths[j];
+                const last = path[path.length - 1];
+                if (!last) continue;
+                const xHead = last.x * scaleX;
+                // Draw nozzle on bar (Y = 400 pixels)
+                ctx.beginPath();
+                ctx.arc(xHead, 400, 2, 0, 2 * Math.PI); // 2-pixel radius
+                ctx.fill();
+                // Draw spray line (from nozzle to felt, Y = 400 to 390)
+                ctx.beginPath();
+                ctx.moveTo(xHead, 400); // Nozzle position
+                ctx.lineTo(xHead, 390); // Felt contact point
+                ctx.stroke();
+            }
+            ctx.globalAlpha = 1.0; // Reset
+
+            // Draw nozzle heads (scrolling with trails)
+            for (let j = 0; j < numNozzles; j++) {
+                const path = persistentNozzlePaths[j];
+                const last = path[path.length - 1];
+                if (!last) continue;
+                const xHead = last.x * scaleX;
+                const yHead = last.y * scaleY;
+                ctx.fillStyle = nozzleColor;
+                ctx.beginPath();
+                ctx.arc(xHead, yHead, 3, 0, 2 * Math.PI); // 3-pixel radius
+                ctx.fill();
+            }
+
+            // Progress bar
+            ctx.globalAlpha = 1.0;
+            ctx.fillStyle = 'blue';
+            ctx.fillRect(0, canvas.height - 5, (frame / frames) * canvas.width, 5);
+
+            // Increment frame
+            frame = (frame + 1) % frames;
+
+            animationId = requestAnimationFrame(animate);
+        }
+
+        // Pause/play toggle
+        function togglePause() {
+            isPaused = !isPaused;
+        }
+
+        // Restart the animation
+        function restart() {
+            replayButton.disabled = true;
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+            }
+            frame = 0;
+            persistentNozzlePaths = Array(numNozzles).fill().map(() => []);
+            coverageBuffer.fill(0); // Reset buffer
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear entire canvas
+            isPaused = false;
+            setTimeout(() => {
+                replayButton.disabled = false;
+                animate();
+            }, 100);
+        }
+
+        // Download canvas as PNG
+        function downloadCanvas() {
+            const link = document.createElement('a');
+            link.download = 'shower-pattern-snapshot.png';
+            link.href = canvas.toDataURL();
+            link.click();
+        }
+
+        animate();
+    </script>
+</body>
+</html>
